@@ -6,13 +6,24 @@ import path from "path";
 import os from "os";
 import { exec } from "child_process";
 import { promisify } from "util";
+import { load as loadYaml } from "js-yaml";
+import {
+  PROVIDER_ID,
+  parseConfigYaml,
+  buildConfigYaml,
+  read9RouterSettings,
+  applyModelSettings,
+  remove9RouterSettings,
+} from "@/lib/ompConfig";
 
 const execAsync = promisify(exec);
 
-const PROVIDER_ID = "9router";
 const getOmpDir = () => path.join(os.homedir(), ".omp", "agent");
 const getOmpDbPath = () => path.join(getOmpDir(), "agent.db");
 const getOmpModelsYmlPath = () => path.join(getOmpDir(), "models.yml");
+// modelRoles / enabledModels live in config.yml, not models.yml (OMP reads them
+// from separate settings layers).
+const getOmpConfigYmlPath = () => path.join(getOmpDir(), "config.yml");
 
 const checkOmpInstalled = async () => {
   const isWindows = os.platform() === "win32";
@@ -43,9 +54,33 @@ const readModelsYml = async () => {
   }
 };
 
+const readConfigYml = async () => parseConfigYaml(await readConfigYmlRaw());
+
+const readConfigYmlRaw = async () => {
+  try {
+    return await fs.readFile(getOmpConfigYmlPath(), "utf-8");
+  } catch {
+    return null;
+  }
+};
+
+const writeConfigYml = async (config) => {
+  await fs.mkdir(getOmpDir(), { recursive: true });
+  await fs.writeFile(getOmpConfigYmlPath(), buildConfigYaml(config), "utf-8");
+};
+
+const readProviderBaseUrl = async () => {
+  try {
+    const parsed = loadYaml(await readModelsYml());
+    return parsed?.providers?.[PROVIDER_ID]?.baseUrl || null;
+  } catch {
+    return null;
+  }
+};
+
 const has9RouterInYml = (content) => {
   if (!content) return false;
-  return content.includes("9router:") || content.includes("localhost:20128");
+  return content.includes(`${PROVIDER_ID}:`) || content.includes("localhost:20128");
 };
 
 // Build standard 9Router provider block for models.yml
@@ -62,6 +97,11 @@ const buildOmpProviderYaml = (baseUrl, apiKey) => {
       type: proxy`;
 };
 
+// Match the whole `9router:` provider entry: the header line plus its indented
+// body. The body's 4+-space indent is what distinguishes it from a sibling
+// provider key at 2 spaces, so a following provider is never swallowed.
+const providerBlockRe = () => new RegExp(`^[ \\t]*${PROVIDER_ID}:[^\\n]*\\n(?:[ \\t]{4,}[^\\n]*\\n?)*`, "gm");
+
 export async function GET() {
   try {
     const installed = await checkOmpInstalled();
@@ -75,11 +115,21 @@ export async function GET() {
 
     const ymlContent = await readModelsYml();
     const has9Router = has9RouterInYml(ymlContent);
+    const config = await readConfigYml();
+    const { models, activeModel, modelRoles } = read9RouterSettings(config);
 
     return NextResponse.json({
       installed: true,
       has9Router,
       configPath: getOmpModelsYmlPath(),
+      configYmlPath: getOmpConfigYmlPath(),
+      modelRoles,
+      enabledModels: models,
+      omp: {
+        models,
+        activeModel,
+        baseURL: has9Router ? await readProviderBaseUrl() : null,
+      },
     });
   } catch (err) {
     return NextResponse.json({ error: { message: err.message } }, { status: 500 });
@@ -95,19 +145,17 @@ export async function POST(request) {
   }
 
   try {
-    const { baseUrl, apiKey } = rawBody || {};
+    const { baseUrl, apiKey, model, models, activeModel, subagentModel, roleModels } = rawBody || {};
     if (!baseUrl) {
       return NextResponse.json({ error: { message: "baseUrl is required" } }, { status: 400 });
     }
 
     await fs.mkdir(getOmpDir(), { recursive: true });
 
+    // 1) models.yml — register/replace the 9Router provider block.
     let ymlContent = await readModelsYml();
     const providerBlock = buildOmpProviderYaml(baseUrl, apiKey);
-
-    // Remove existing 9router provider if present
-    const regex = new RegExp(`\\s*${PROVIDER_ID}:[\\s\\S]*?(?=\\n\\s*\\w+:|$)`, "g");
-    ymlContent = ymlContent.replace(regex, "");
+    ymlContent = ymlContent.replace(providerBlockRe(), "");
 
     if (!ymlContent.trim()) {
       ymlContent = `providers:\n${providerBlock}\n`;
@@ -118,6 +166,34 @@ export async function POST(request) {
     }
 
     await fs.writeFile(getOmpModelsYmlPath(), ymlContent, "utf-8");
+
+    // 2) config.yml — enabledModels + modelRoles. Only touched when the caller
+    //    actually supplies model settings, so the legacy provider-only setup
+    //    (CLI quick-setup) keeps leaving config.yml alone.
+    const modelsArray = Array.isArray(models)
+      ? models
+      : typeof model === "string"
+        ? [model]
+        : undefined;
+    const roleSelections = roleModels && typeof roleModels === "object" ? roleModels : {};
+    const hasModelSettings =
+      modelsArray !== undefined ||
+      typeof activeModel === "string" ||
+      typeof subagentModel === "string" ||
+      Object.keys(roleSelections).length > 0;
+
+    if (hasModelSettings) {
+      const config = applyModelSettings(await readConfigYml(), {
+        models: modelsArray,
+        activeModel,
+        // The card's "Subagent Model" field maps onto OMP's bundled `task`
+        // subagent role. Per-agent overrides (task.agentModelOverrides) are a
+        // separate setting and are deliberately left untouched.
+        subagentModel,
+        roleModels: roleSelections,
+      });
+      await writeConfigYml(config);
+    }
 
     // Best-effort update to agent.db if better-sqlite3 or node:sqlite is present
     try {
@@ -149,8 +225,9 @@ export async function POST(request) {
 
     return NextResponse.json({
       success: true,
-      message: "Oh My Pi settings applied! Run 'omp' and all 9Router models appear under 9router in /model.",
+      message: "Oh My Pi settings applied! Run 'omp' and the selected models appear under /model.",
       configPath: getOmpModelsYmlPath(),
+      configYmlPath: getOmpConfigYmlPath(),
     });
   } catch (err) {
     return NextResponse.json({ error: { message: err.message } }, { status: 500 });
@@ -159,14 +236,22 @@ export async function POST(request) {
 
 export async function DELETE() {
   try {
+    // 1) models.yml — drop the 9Router provider block.
     let ymlContent = await readModelsYml();
-    const regex = new RegExp(`\\s*${PROVIDER_ID}:[\\s\\S]*?(?=\\n\\s*\\w+:|$)`, "g");
-    ymlContent = ymlContent.replace(regex, "");
+    ymlContent = ymlContent.replace(providerBlockRe(), "");
 
     if (ymlContent.trim() === "providers:") {
       await fs.rm(getOmpModelsYmlPath(), { force: true });
     } else {
       await fs.writeFile(getOmpModelsYmlPath(), ymlContent, "utf-8");
+    }
+
+    // 2) config.yml — strip 9Router selectors. Refuse to touch a file we cannot
+    //    parse, so a hand-written config.yml is never clobbered.
+    const rawConfig = await readConfigYmlRaw();
+    if (rawConfig !== null && rawConfig.trim()) {
+      const parsed = parseConfigYaml(rawConfig);
+      await writeConfigYml(remove9RouterSettings(parsed));
     }
 
     return NextResponse.json({

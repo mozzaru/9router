@@ -573,6 +573,100 @@ async function showHermesMenu(port, breadcrumb = []) {
   });
 }
 
+// ─── Oh My Pi ─────────────────────────────────────────────────────────────────
+
+async function buildOmpHeader() {
+  const result = await api.getCliToolSettings("omp");
+  if (!result.success) return `  ${COLORS.red}Failed to load settings${COLORS.reset}`;
+
+  const { installed, has9Router, omp, enabledModels } = result.data;
+  if (!installed) return `Status:   ${COLORS.red}✗ Oh My Pi not installed${COLORS.reset}`;
+
+  if (!has9Router) {
+    return [
+      `Status:   ${COLORS.red}✗ Not configured${COLORS.reset}`,
+      `${COLORS.dim}Run "Quick Setup" to configure${COLORS.reset}`
+    ].join("\n");
+  }
+
+  const lines = [`Status:   ${COLORS.green}✓ Configured${COLORS.reset}`];
+  if (omp?.baseURL) lines.push(`Endpoint: ${COLORS.cyan}${omp.baseURL}${COLORS.reset}`);
+  if (omp?.activeModel) lines.push(`Active:   ${COLORS.dim}${omp.activeModel}${COLORS.reset}`);
+  if (Array.isArray(enabledModels) && enabledModels.length > 0) {
+    lines.push(`Models:   ${COLORS.dim}${enabledModels.join(", ")}${COLORS.reset}`);
+  }
+  return lines.join("\n");
+}
+
+async function ompQuickSetup(port) {
+  const { endpoint } = await getEndpoint(port);
+  const apiKey = await getFirstApiKey();
+
+  if (!apiKey) {
+    showStatus("No API keys found. Create one in API Keys menu first.", "error");
+    await pause();
+    return;
+  }
+
+  // Pick models until the user stops — OMP's /model picker is Ctrl+P cycling
+  // across every enabledModel, so the setup is inherently multi-model.
+  const models = [];
+  while (true) {
+    const label = models.length === 0 ? "Select Model (Oh My Pi)" : `Add Model #${models.length + 1}`;
+    const picked = await selectModelFromList(label, models.join(", "), { excludeCombos: false });
+    if (!picked) break;
+    if (!models.includes(picked)) models.push(picked);
+    const more = await confirm(`Add another model? (current: ${models.length})`);
+    if (!more) break;
+  }
+
+  if (models.length === 0) return;
+
+  // The first model is the active (default role) model unless the user changes it.
+  let activeModel = models[0];
+  const wantActive = await confirm(`Use a different active model? (default: ${activeModel})`);
+  if (wantActive) {
+    const picked = await selectModelFromList("Select Active Model (Oh My Pi)", activeModel, { excludeCombos: false });
+    if (picked) activeModel = picked;
+  }
+
+  let subagentModel = activeModel;
+  const wantSubagent = await confirm(`Set a different subagent (task) model? (default: ${activeModel})`);
+  if (wantSubagent) {
+    const picked = await selectModelFromList("Select Subagent Model (Oh My Pi)", activeModel, { excludeCombos: false });
+    if (picked) subagentModel = picked;
+  }
+
+  const result = await api.applyCliToolSettings("omp", {
+    baseUrl: endpoint,
+    apiKey,
+    models,
+    activeModel,
+    subagentModel,
+  });
+  showStatus(result.success ? "Oh My Pi setup completed!" : `Failed: ${result.error}`, result.success ? "success" : "error");
+  await pause();
+}
+
+async function ompReset() {
+  const result = await api.resetCliToolSettings("omp");
+  showStatus(result.success ? "Oh My Pi settings reset!" : `Failed: ${result.error}`, result.success ? "success" : "error");
+  await pause();
+}
+
+async function showOmpMenu(port, breadcrumb = []) {
+  await showMenuWithBack({
+    title: "🐙 Oh My Pi Settings",
+    breadcrumb,
+    headerContent: buildOmpHeader,
+    refresh: async () => ({}),
+    items: [
+      { label: "⚡ Quick Setup", action: async () => { await ompQuickSetup(port); return true; } },
+      { label: "Reset to Default", action: async () => { await ompReset(); return true; } }
+    ]
+  });
+}
+
 // ─── Main CLI Tools Menu ──────────────────────────────────────────────────────
 
 /**
@@ -610,6 +704,10 @@ async function showCliToolsMenu(port, breadcrumb = []) {
       {
         label: "Hermes",
         action: async () => { await showHermesMenu(port, [...breadcrumb, "Hermes"]); return true; }
+      },
+      {
+        label: "Oh My Pi",
+        action: async () => { await showOmpMenu(port, [...breadcrumb, "Oh My Pi"]); return true; }
       }
     ]
   });

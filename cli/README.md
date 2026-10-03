@@ -110,7 +110,7 @@ Supported: `claude`, `codex`, `opencode`, `droid`, `crush`, `kilo`, `cline`, or 
 
 ## 🛠️ Supported CLI Tools
 
-Claude-Code • OpenClaw • Codex • OpenCode • Cursor • Antigravity • Cline • Continue • Droid • Roo • Copilot • Kilo Code • Gemini CLI • Qwen Code • iFlow • Crush • Crusher • Aider
+Claude-Code • OpenClaw • Codex • OpenCode • Cursor • Antigravity • Cline • Continue • Droid • Roo • Copilot • Kilo Code • Gemini CLI • Qwen Code • iFlow • Crush • Crusher • Aider • Hermes • Oh My Pi
 
 Any tool supporting OpenAI/Claude-compatible API works.
 
