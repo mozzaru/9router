@@ -182,7 +182,7 @@ See `9router connect --help` for the full list.
 
 ## 🛠️ Supported CLI Tools
 
-Claude-Code • OpenClaw • Codex • OpenCode • Cursor • Antigravity • Cline • Continue • Droid • Roo • Copilot • Kilo Code • Gemini CLI • Qwen Code • iFlow • Crush • Crusher • Aider
+Claude-Code • OpenClaw • Codex • OpenCode • Cursor • Antigravity • Cline • Continue • Droid • Roo • Copilot • Kilo Code • Gemini CLI • Qwen Code • iFlow • Crush • Crusher • Aider • Hermes • Oh My Pi
 
 Any tool supporting OpenAI/Claude-compatible API works.
 

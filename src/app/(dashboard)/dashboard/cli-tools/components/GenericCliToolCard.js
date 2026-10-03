@@ -222,8 +222,6 @@ export default function GenericCliToolCard({
     switch (tool.id) {
       case "pi":
         return "curl -fsSL https://pi.dev/install.sh | sh  # or: npm install -g --ignore-scripts @earendil-works/pi-coding-agent";
-      case "omp":
-        return "npm install -g oh-my-pi";
       case "crush":
         return "brew install charmbracelet/tap/crush  # or go install github.com/charmbracelet/crush@latest";
       case "forge":
@@ -270,13 +268,6 @@ export default function GenericCliToolCard({
           },
         ];
       }
-      case "omp":
-        return [
-          {
-            filename: "~/.omp/agent/models.yml",
-            content: `providers:\n  9router:\n    baseUrl: ${effectiveUrl}\n    apiKey: ${key}\n    api: openai-completions\n    authHeader: true\n    disableStrictTools: true\n    discovery:\n      type: proxy`,
-          },
-        ];
       case "crush":
         return [
           {
@@ -530,8 +521,8 @@ export default function GenericCliToolCard({
                   </div>
                 )}
 
-                {/* Model (1 model cho các tool khác, trừ omp) */}
-                {tool.id !== "omp" && tool.id !== "pi" && (
+                {/* Single model picker (Pi uses its own multi-model list above) */}
+                {tool.id !== "pi" && (
                   <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr_auto] sm:items-center sm:gap-2">
                     <span className="text-xs font-semibold text-text-main sm:text-right sm:text-sm">Model</span>
                     <span className="material-symbols-outlined hidden text-text-muted text-[14px] sm:inline">arrow_forward</span>
