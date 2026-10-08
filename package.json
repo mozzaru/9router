@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "cross-env NEXT_DIST_DIR=.next-dev next dev --port 20128 --hostname 127.0.0.1",
     "dev:webpack": "cross-env NEXT_DIST_DIR=.next-dev next dev --port 20128 --hostname 127.0.0.1",
-    "build": "next build",
+    "//build": "build untuk termux (SWC WASM)",
+    "build": "NODE_OPTIONS=\"--require ./scripts/swc-wasm-preload.cjs\" next build",
+    "//build:normal": "build normal (SWC native)",
+    "build:normal": "next build",
     "postbuild": "node scripts/copy-standalone-assets.mjs",
     "postbuild:bun": "node scripts/copy-standalone-assets.mjs",
     "start": "node custom-server.js --port 20127",
@@ -61,6 +64,7 @@
     "zustand": "^5.0.10"
   },
   "devDependencies": {
+    "@next/swc-wasm-nodejs": "^14.2.33",
     "@tailwindcss/postcss": "^4.1.18",
     "@types/better-sqlite3": "^7.6.11",
     "@types/diff": "^7.0.1",
