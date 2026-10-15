@@ -1458,11 +1458,13 @@ The following upstream commits in the v0.5.104 range were deliberately not porte
 
 - **Suggested model list: bypass Next.js fetch for free catalogues.** The live catalogue lookups in `/api/providers/suggested-models` and its server-side fetcher now use undici directly. The server-side global fetch is Next.js's patched copy, which swallowed abort signals and let the upstream call hang until the outer ceiling answered with the curated fallback - the panel then showed only built-in models instead of the live list.
 
-# v0.5.182 (2026-10-15) · 1 commit
+# v0.5.182 (2026-10-15) · 2 commits
 
 ## Fixes
 
 - **Suggested model list: hard request ceiling.** `/api/providers/suggested-models` and its server-side fetcher now race the whole lookup against a fixed timeout. A stalled await previously held the route open indefinitely and left the provider panel blank; it now answers the curated fallback list instead.
+- **Usage: live pending counts for account-less providers** (OpenCode Free and other no-auth models) never reached the dashboard — the topology edge stayed dark mid-request because pending rows were keyed only by model and account. A per-provider pending view is now tracked alongside and published as `free` account rows (deduped against providers already covered by an account row), so `getActiveRequests`/`getUsageStats` light the correct provider edge during traffic -Custom
+
 
 # v0.5.181 (2026-10-15) · 1 commit
 

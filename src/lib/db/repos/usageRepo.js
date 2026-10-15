@@ -18,7 +18,7 @@ const CONN_CACHE_TTL_MS = 30 * 1000;
 const PERIOD_MS = { "24h": 86400000, "7d": 604800000, "30d": 2592000000, "60d": 5184000000 };
 
 // In-memory state shared across Next.js modules
-if (!global._pendingRequests) global._pendingRequests = { byModel: {}, byAccount: {} };
+if (!global._pendingRequests) global._pendingRequests = { byModel: {}, byAccount: {}, byProvider: {} };
 if (!global._lastErrorProvider) global._lastErrorProvider = { provider: "", ts: 0 };
 if (!global._statsEmitter) {
   global._statsEmitter = new EventEmitter();
@@ -159,6 +159,10 @@ async function calculateCost(provider, model, tokens) {
 export function trackPendingRequest(model, provider, connectionId, started, error = false) {
   const modelKey = provider ? `${model} (${provider})` : model;
   const timerKey = `${connectionId}|${modelKey}`;
+  // No-auth traffic (OpenCode Free, …) owns no connection; keep its live counts
+  // in a provider view so the topology can still light that edge.
+  const providerKey = provider ? provider.toLowerCase() : "";
+  if (providerKey && !pendingRequests.byProvider) pendingRequests.byProvider = {};
 
   if (!pendingRequests.byModel[modelKey]) pendingRequests.byModel[modelKey] = 0;
   pendingRequests.byModel[modelKey] = Math.max(0, pendingRequests.byModel[modelKey] + (started ? 1 : -1));
@@ -176,6 +180,18 @@ export function trackPendingRequest(model, provider, connectionId, started, erro
     }
   }
 
+  if (providerKey) {
+    if (!pendingRequests.byProvider[providerKey]) pendingRequests.byProvider[providerKey] = {};
+    if (!pendingRequests.byProvider[providerKey][modelKey]) pendingRequests.byProvider[providerKey][modelKey] = 0;
+    pendingRequests.byProvider[providerKey][modelKey] = Math.max(0, pendingRequests.byProvider[providerKey][modelKey] + (started ? 1 : -1));
+    if (pendingRequests.byProvider[providerKey][modelKey] === 0) {
+      delete pendingRequests.byProvider[providerKey][modelKey];
+      if (Object.keys(pendingRequests.byProvider[providerKey]).length === 0) {
+        delete pendingRequests.byProvider[providerKey];
+      }
+    }
+  }
+
   if (started) {
     clearTimeout(pendingTimers[timerKey]);
     pendingTimers[timerKey] = setTimeout(() => {
@@ -183,6 +199,9 @@ export function trackPendingRequest(model, provider, connectionId, started, erro
       if (pendingRequests.byModel[modelKey] > 0) pendingRequests.byModel[modelKey] = 0;
       if (connectionId && pendingRequests.byAccount[connectionId]?.[modelKey] > 0) {
         pendingRequests.byAccount[connectionId][modelKey] = 0;
+      }
+      if (providerKey && pendingRequests.byProvider?.[providerKey]?.[modelKey] > 0) {
+        pendingRequests.byProvider[providerKey][modelKey] = 0;
       }
       scheduleStatsEvent("pending");
     }, PENDING_TIMEOUT_MS);
@@ -209,15 +228,33 @@ export async function getActiveRequests(filterApiKey = null, allowedModels = "*"
   const connectionMap = await getConnectionMapCached();
 
   if (!filterApiKey) {
+    const seenProviders = new Set();
     for (const [connectionId, models] of Object.entries(pendingRequests.byAccount)) {
       for (const [modelKey, count] of Object.entries(models)) {
         if (count > 0) {
           const accountName = connectionMap[connectionId] || `Account ${connectionId.slice(0, 8)}...`;
           const match = modelKey.match(/^(.*) \((.*)\)$/);
+          const provider = match ? match[2] : "unknown";
+          seenProviders.add(provider.toLowerCase());
           activeRequests.push({
             model: match ? match[1] : modelKey,
-            provider: match ? match[2] : "unknown",
+            provider,
             account: accountName, count,
+          });
+        }
+      }
+    }
+    // Providers shown above already; only publish no-auth rows whose provider
+    // owns no account, so the topology lights free edges like OpenCode.
+    for (const [provider, models] of Object.entries(pendingRequests.byProvider || {})) {
+      if (seenProviders.has(provider.toLowerCase())) continue;
+      for (const [modelKey, count] of Object.entries(models)) {
+        if (count > 0) {
+          const match = modelKey.match(/^(.*) \((.*)\)$/);
+          activeRequests.push({
+            model: match ? match[1] : modelKey,
+            provider: match ? match[2] : provider,
+            account: "free", count,
           });
         }
       }
@@ -471,15 +508,33 @@ export async function getUsageStats(period = "all", filterApiKey = null, allowed
 
   // Active requests - only populate for global view, or filter for specific key
   if (!filterApiKey) {
+    const seenProviders = new Set();
     for (const [connectionId, models] of Object.entries(pendingRequests.byAccount)) {
       for (const [modelKey, count] of Object.entries(models)) {
         if (count > 0) {
           const accountName = connectionMap[connectionId] || `Account ${connectionId.slice(0, 8)}...`;
           const match = modelKey.match(/^(.*) \((.*)\)$/);
+          const provider = match ? match[2] : "unknown";
+          seenProviders.add(provider.toLowerCase());
           stats.activeRequests.push({
             model: match ? match[1] : modelKey,
-            provider: match ? match[2] : "unknown",
+            provider,
             account: accountName, count,
+          });
+        }
+      }
+    }
+    // Same no-auth rows as getActiveRequests: account-less providers live
+    // only in the provider view, and the topology needs them to light up.
+    for (const [provider, models] of Object.entries(pendingRequests.byProvider || {})) {
+      if (seenProviders.has(provider.toLowerCase())) continue;
+      for (const [modelKey, count] of Object.entries(models)) {
+        if (count > 0) {
+          const match = modelKey.match(/^(.*) \((.*)\)$/);
+          stats.activeRequests.push({
+            model: match ? match[1] : modelKey,
+            provider: match ? match[2] : provider,
+            account: "free", count,
           });
         }
       }
