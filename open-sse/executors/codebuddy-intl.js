@@ -26,10 +26,14 @@ export class CodeBuddyIntlExecutor extends DefaultExecutor {
 
     // CodeBuddy rejects plain OpenAI shape (11101 invalid request): needs a
     // leading system prompt + user content as typed blocks, not a bare string.
+    // A studio-model override is injected by the router as a leading client
+    // system message; dropping system roles here would silently discard it,
+    // so keep client system messages (fixed identity first, then theirs) and
+    // only skip developer roles.
     const source = Array.isArray(transformed.messages) ? transformed.messages : [];
     transformed.messages = [{ role: "system", content: "You are CodeBuddy Code." }];
     for (const message of source) {
-      if (!message || typeof message !== "object" || ["system", "developer"].includes(message.role)) continue;
+      if (!message || typeof message !== "object" || message.role === "developer") continue;
       if (message.role === "user" && typeof message.content === "string") {
         transformed.messages.push({ ...message, content: [{ type: "text", text: message.content }] });
       } else {
