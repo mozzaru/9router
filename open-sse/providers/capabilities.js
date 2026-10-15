@@ -578,23 +578,27 @@ export const PATTERN_CAPABILITIES = [
  *   limits it supplies and silently falls back to the generic patterns below. Callers that
  *   have the server's answer (/api/models, via useModelCaps) pass it here; it is merged over
  *   the local tables, so fields it does not carry (tools, pdf, audio/video, thinking*) survive.
+ *   Non-function values (callers pass 0 as "none") are ignored, not called.
+ * @param {number} [explicitWindow] operator-set combo window; when > 0 it wins over the
+ *   auto min-across-members value (the combo form sends its configured window here)
  * @param {number} [_depth] internal recursion depth guard
  * @returns {object|null} full capabilities object, or null for empty input
  */
-export function aggregateComboCapabilities(comboModels, comboLookup = null, resolveCaps = null, _depth = 0) {
+export function aggregateComboCapabilities(comboModels, comboLookup = null, resolveCaps = null, explicitWindow = 0, _depth = 0) {
   if (!comboModels?.length || _depth > 6) return null;
+  const overrideCaps = typeof resolveCaps === "function" ? resolveCaps : null;
   const allCaps = comboModels.map((fullId) => {
     // Nested combo: bare name (no slash) that exists in the lookup — recurse
     if (!fullId.includes("/") && comboLookup?.[fullId]) {
-      return aggregateComboCapabilities(comboLookup[fullId], comboLookup, resolveCaps, _depth + 1)
-          ?? resolveCaps?.(fullId)
+      return aggregateComboCapabilities(comboLookup[fullId], comboLookup, overrideCaps, explicitWindow, _depth + 1)
+          ?? overrideCaps?.(fullId)
           ?? getCapabilitiesForModel(null, fullId);
     }
     const slash = fullId.indexOf("/");
     const provider = slash === -1 ? null : fullId.slice(0, slash);
     const model = slash === -1 ? fullId : fullId.slice(slash + 1);
     const local = getCapabilitiesForModel(provider, model);
-    const override = resolveCaps?.(fullId);
+    const override = overrideCaps?.(fullId);
     return override ? { ...local, ...override } : local;
   });
   const first = allCaps[0];
@@ -611,7 +615,9 @@ export function aggregateComboCapabilities(comboModels, comboLookup = null, reso
     thinkingFormat:     first.thinkingFormat,
     thinkingCanDisable: first.thinkingCanDisable,
     thinkingRange:      first.thinkingRange,
-    contextWindow: Math.min(...allCaps.map((c) => c.contextWindow)),
+    contextWindow: Number(explicitWindow) > 0
+      ? Number(explicitWindow)
+      : Math.min(...allCaps.map((c) => c.contextWindow)),
     maxOutput:     Math.max(...allCaps.map((c) => c.maxOutput)),
   };
 }

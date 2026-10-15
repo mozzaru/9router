@@ -269,6 +269,12 @@ The following upstream commits in the v0.5.104 range were deliberately not porte
 
 - **Suggested model list: hard request ceiling.** `/api/providers/suggested-models` and its server-side fetcher now race the whole lookup against a fixed timeout. A stalled await previously held the route open indefinitely and left the provider panel blank; it now answers the curated fallback list instead.
 
+
+# v0.5.182 (2026-10-15) · 1 commit
+
+### Fixes
+- **Models**: `/v1/models` (and `/v1/models/{kind}`) answered `500 "e is not a function"` for every client whenever a combo had no explicit context window. The combo capability call passed `0` into the `resolveCaps` slot and the combo's window into the recursion-depth slot, so the falsy resolver was invoked as a function inside `aggregateComboCapabilities`. The function now takes the explicit combo window as its 4th parameter (wins over the auto min-across-members value, restoring the v0.5.117 combo-window feature), the recursion guard moved to a 5th parameter, and a non-function resolver is ignored instead of called. Chat routing was never affected; only the model listing crashed, which also froze every client's model picker (Oh My Pi CLI tools included) on its last successful snapshot.
+
 # v0.5.181 (2026-10-15) · 1 commit
 
 ## Fixes
