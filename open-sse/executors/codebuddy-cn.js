@@ -39,9 +39,13 @@ export class CodeBuddyExecutor extends DefaultExecutor {
         const text = flatten(message.content);
         if (!text) return message;
         if (text.length > 2000 || AGENT_PATTERN.test(text)) {
+          // Long user-owned prompts (studio overrides, router-injected) must not
+          // lose their non-agent head: keep the portion above the 2000-char line
+          // verbatim and neutralize only the rest.
+          const prefix = text.slice(0, 2000);
           return typeof message.content === "string"
-            ? { ...message, content: NEUTRAL_PROMPT }
-            : { ...message, content: [{ type: "text", text: NEUTRAL_PROMPT }] };
+            ? { ...message, content: prefix + NEUTRAL_PROMPT }
+            : { ...message, content: [{ type: "text", text: prefix + NEUTRAL_PROMPT }] };
         }
         return message;
       });
