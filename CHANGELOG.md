@@ -1,4 +1,11 @@
 # v0.5.202 (2026-10-17) · 2 commits
+# Unreleased
+
+## Fixes
+- **Auth / Proxy**: support proxy pool fallback and pool exclusion for no-auth free providers (`FREE_PROVIDERS`); mark `proxy:*` virtual connections unavailable on fallbackable HTTP errors (403/429/5xx) so rotating pools seamlessly fail over to working relays
+- **OpenCode**: match `deepseek-v4.1-flash-free` in `OPENCODE_FAMILIES` regex and add `deepseek-v4.1-flash-free` to OpenCode registry models with `[openai, claude, openai-responses]` supported formats
+
+# v0.5.104 (2026-10-15)
 
 ## What Was Fixed
 
