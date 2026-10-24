@@ -1,4 +1,14 @@
-import sharp from "sharp";
+let _sharp;
+async function getSharp() {
+  if (_sharp === undefined) {
+    try {
+      _sharp = (await import("sharp")).default;
+    } catch (e) {
+      _sharp = null;
+    }
+  }
+  return _sharp;
+}
 
 /**
  * Extracts raw buffer and mime type from an image block (OpenAI or Claude shape).
@@ -50,6 +60,8 @@ export async function convertImageToTextScript(buffer, mimeType = "image/png") {
   if (!buffer || !Buffer.isBuffer(buffer)) return "";
 
   try {
+    const sharp = await getSharp();
+    if (!sharp) return `\n\n[Image-to-Text: Attached image (${mimeType})]`;
     const img = sharp(buffer);
     const meta = await img.metadata();
 
