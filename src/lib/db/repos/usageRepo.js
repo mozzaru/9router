@@ -48,6 +48,14 @@ function scheduleStatsEvent(event, delayMs = 150) {
   statsEmitTimers[key]?.unref?.();
 }
 
+// Statuses that mean the call produced a usable answer. usageHistory stores
+// "ok" for a completed stream, a bare HTTP code ("429", "404") or a
+// "FAILED <code>" string when the executor gave up; the live stream lists only
+// the first group. An empty status predates the column and counts as ok so old
+// rows do not disappear from the list.
+const SUCCESS_STATUSES = new Set(["", "ok", "success", "completed"]);
+const isSuccessfulStatus = (status) => SUCCESS_STATUSES.has(String(status || "").toLowerCase());
+
 function getLocalDateKey(timestamp) {
   const d = timestamp ? new Date(timestamp) : new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -281,7 +289,8 @@ export async function getActiveRequests(filterApiKey = null, allowedModels = "*"
       };
     })
     .filter((e) => {
-      if (e.promptTokens === 0 && e.completionTokens === 0) return false;
+      // Same rule as getUsageStats: the stream is successful traffic only.
+      if (!isSuccessfulStatus(e.status)) return false;
       const minute = e.timestamp ? e.timestamp.slice(0, 16) : "";
       const key = `${e.model}|${e.provider}|${e.promptTokens}|${e.completionTokens}|${minute}`;
       if (seen.has(key)) return false;
@@ -486,7 +495,11 @@ export async function getUsageStats(period = "all", filterApiKey = null, allowed
     })
     .filter((e) => {
       if (!modelAllowed(e.model)) return false;
-      if (e.promptTokens === 0 && e.completionTokens === 0) return false;
+      // The live stream lists calls that actually worked. A 429/404 row is a
+      // rejected attempt, not traffic the operator wants scrolling past - the
+      // topology still lights that provider's error edge, and the byProvider
+      // totals still count the failure.
+      if (!isSuccessfulStatus(e.status)) return false;
       const minute = e.timestamp ? e.timestamp.slice(0, 16) : "";
       const key = `${e.model}|${e.provider}|${e.promptTokens}|${e.completionTokens}|${minute}`;
       if (seen.has(key)) return false;
@@ -1208,6 +1221,29 @@ export async function getRecentLogs(limit = 200) {
     });
   } catch (e) {
     console.error("[usageRepo] getRecentLogs failed:", e.message);
+    return [];
+  }
+}
+
+/**
+ * Every provider that has actually served traffic, read from usage history.
+ * requestDetails only holds rows when request logging is enabled, so a filter
+ * list built from it alone comes back empty on a default install even though
+ * the router has been serving OAuth, API-key and no-auth providers all day.
+ */
+export async function getDistinctUsageProviders(filterApiKey = null) {
+  try {
+    const db = await getAdapter();
+    const where = filterApiKey
+      ? `provider IS NOT NULL AND provider <> '' AND apiKey = ?`
+      : `provider IS NOT NULL AND provider <> ''`;
+    const rows = db.all(
+      `SELECT DISTINCT provider FROM usageHistory WHERE ${where} ORDER BY provider ASC`,
+      filterApiKey ? [filterApiKey] : [],
+    );
+    return rows.map((r) => r.provider);
+  } catch (e) {
+    console.error("[usageRepo] getDistinctUsageProviders failed:", e.message);
     return [];
   }
 }

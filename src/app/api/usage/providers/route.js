@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDistinctProviders } from "@/lib/requestDetailsDb";
+import { getDistinctUsageProviders } from "@/lib/db/index.js";
 import { getProviderNodes } from "@/lib/localDb";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
 import { getSessionContext } from "@/lib/auth/dashboardPermissions";
@@ -9,7 +10,11 @@ export const dynamic = "force-dynamic";
 
 /**
  * GET /api/usage/providers
- * Returns list of unique providers from request details
+ * Returns every provider that served traffic - from request details AND from
+ * usage history. Request details only exist when request logging is enabled,
+ * so sourcing the list there alone left the Usage filters (and the topology's
+ * fallback list) empty on installs that never turned that on, while the
+ * stats right beside them showed dozens of active providers.
  */
 export async function GET() {
   try {
@@ -18,11 +23,16 @@ export async function GET() {
     const ctx = await getSessionContext();
     const allowedModelPatterns = parseAllowedModels(ctx.allowedModels || "*");
 
-    // Query DISTINCT provider column directly - avoids parsing every row's
+    // Query DISTINCT provider columns directly - avoids parsing every row's
     // full JSON blob (can be hundreds of MB), which previously caused OOM.
-    const providerIds = await getDistinctProviders(allowedModelPatterns);
+    const [detailProviders, usageProviders, providerNodes] = await Promise.all([
+      getDistinctProviders(allowedModelPatterns).catch(() => []),
+      getDistinctUsageProviders(ctx.apiKeyFilter || null).catch(() => []),
+      getProviderNodes().catch(() => []),
+    ]);
 
-    const providerNodes = await getProviderNodes();
+    const providerIds = Array.from(new Set([...(detailProviders || []), ...(usageProviders || [])])).sort();
+
     const nodeMap = {};
     for (const node of providerNodes) {
       nodeMap[node.id] = { name: node.name, logo: node.logo || null };
