@@ -153,6 +153,17 @@ const parseOpenAIStyleModels = (data) => {
   return data?.data || data?.models || data?.results || [];
 };
 
+// Live catalogues are re-fetched per connection per request, and many upstreams
+// answer slowly: with ~140 compatible connections the serial loop pushed
+// /v1/models to 10-15s, which is what made OMP's proxy discovery (10s probe
+// budget by default) publish no models at all. A short TTL collapses repeated
+// probes (model pickers, OMP discovery, CLI tools) onto one fetch, and in-flight
+// dedup keeps concurrent clients from stampeding the same upstream.
+const COMPATIBLE_MODELS_TTL_MS = 60000;
+const COMPATIBLE_MODELS_CACHE_MAX = 512;
+const compatibleModelsCache = new Map(); // cacheKey -> { at, ids }
+const compatibleModelsInFlight = new Map(); // cacheKey -> Promise<string[]>
+
 // Header sent by fetchCompatibleModelIds to detect cross-instance /models fetches
 // and break recursive loops between 9router instances connected to each other.
 const INTERNAL_MODELS_FETCH_HEADER = "x-9r-internal-models-fetch";
@@ -216,31 +227,53 @@ async function fetchCompatibleModelIds(connection) {
     return [];
   }
 
+  // Catalogue results are cached by upstream, not by caller: every client asking
+  // /v1/models sees the same connection set, so one fetch serves them all.
+  const cacheKey = `${connection.provider}|${url}|${connection.apiKey}`;
+  const cached = compatibleModelsCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < COMPATIBLE_MODELS_TTL_MS) return cached.ids;
+  const inFlight = compatibleModelsInFlight.get(cacheKey);
+  if (inFlight) return inFlight;
+
+  const pending = (async () => {
+    let ids = [];
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const response = await fetch(url, {
+        method: "GET",
+        headers: { ...headers, [INTERNAL_MODELS_FETCH_HEADER]: "1" },
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const rawModels = parseOpenAIStyleModels(await response.json());
+        ids = Array.from(
+          new Set(
+            rawModels
+              .map((model) => model?.id || model?.name || model?.model)
+              .filter((modelId) => typeof modelId === "string" && modelId.trim() !== "")
+          )
+        );
+      }
+    } catch {
+      // Unreachable upstream: the empty result is cached too, so one dead host
+      // costs a single timeout instead of one per request.
+    }
+    if (compatibleModelsCache.size >= COMPATIBLE_MODELS_CACHE_MAX) {
+      compatibleModelsCache.delete(compatibleModelsCache.keys().next().value);
+    }
+    compatibleModelsCache.set(cacheKey, { at: Date.now(), ids });
+    return ids;
+  })();
+
+  compatibleModelsInFlight.set(cacheKey, pending);
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const response = await fetch(url, {
-      method: "GET",
-      headers: { ...headers, [INTERNAL_MODELS_FETCH_HEADER]: "1" },
-      cache: "no-store",
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    if (!response.ok) return [];
-
-    const data = await response.json();
-    const rawModels = parseOpenAIStyleModels(data);
-
-    return Array.from(
-      new Set(
-        rawModels
-          .map((model) => model?.id || model?.name || model?.model)
-          .filter((modelId) => typeof modelId === "string" && modelId.trim() !== "")
-      )
-    );
-  } catch {
-    return [];
+    return await pending;
+  } finally {
+    compatibleModelsInFlight.delete(cacheKey);
   }
 }
 
@@ -451,6 +484,25 @@ export async function buildModelsList(kindFilter, options = {}) {
       });
     }
   } else {
+    // Every compatible provider is probed at most once, and the serial loop
+    // below would pay each upstream's latency in turn — with the connection
+    // count operators actually run (100+) that alone exceeded most clients'
+    // timeouts. The probes are independent, so they run concurrently and the
+    // loop then reads the cache; in-flight dedup keeps it a single fetch each.
+    if (!skipDynamicFetch) {
+      const probes = [];
+      for (const [providerId, conn] of activeConnectionByProvider.entries()) {
+        if (!providerMatchesKinds(providerId, kindFilter)) continue;
+        if (!isOpenAICompatibleProvider(providerId) && !isAnthropicCompatibleProvider(providerId)) continue;
+        const staticAlias = PROVIDER_ID_TO_ALIAS[providerId] || providerId;
+        if ((PROVIDER_MODELS[staticAlias] || []).length > 0) continue;
+        const enabledModels = conn?.providerSpecificData?.enabledModels;
+        if (Array.isArray(enabledModels) && enabledModels.length > 0) continue;
+        probes.push(fetchCompatibleModelIds(conn));
+      }
+      if (probes.length > 0) await Promise.all(probes);
+    }
+
     for (const [providerId, conn] of activeConnectionByProvider.entries()) {
       if (!providerMatchesKinds(providerId, kindFilter)) continue;
 

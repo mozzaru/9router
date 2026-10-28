@@ -27,14 +27,19 @@ Options:
                          ${TOOL_IDS.join(", ")}, all
   --password <pw>        Dashboard password (or env NINE_ROUTER_PASSWORD;
                          prompted if omitted — preferred, keeps it out of shell history)
+  --api-key-env <NAME>   Environment variable holding the 9Router API key
+                         (default: NINEROUTER_API_KEY). Tools that can use it —
+                         omp — get the name, never the secret, so the key stays
+                         in your shell (~/.bashrc) instead of a config file.
   --save                 After a successful login, save the password for this server
                          to ~/.9router/connect.env (plain text, mode 600) so later
                          runs skip the prompt. Delete that file to forget it.
   --key-name <name>      API key name to reuse/create (default: cli-<hostname>)
   --api-key <key>        Use this API key, skip login + key lookup
   --model <model>        Model for all non-Claude tools (default: each tool's own
-                         model on the server, else the server's OpenCode model;
-                         omp needs none — it discovers every server model)
+                        model on the server, else the server's OpenCode model;
+                        omp needs none — the server's selection is pinned and
+                        every other server model is discovered)
   --fable|--opus|--sonnet|--haiku <model>
                          Override a Claude Code tier (default: the server's value)
   --print-env            Also print OpenAI-compatible env vars for other CLIs
@@ -55,6 +60,7 @@ function parseArgs(argv) {
     keyName: `cli-${os.hostname()}`.slice(0, 64),
     apiKey: null,
     models: {},
+    apiKeyEnv: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -66,6 +72,7 @@ function parseArgs(argv) {
     if (a === "--password") opts.password = next();
     else if (a === "--key-name") opts.keyName = next();
     else if (a === "--api-key") opts.apiKey = next();
+    else if (a === "--api-key-env") opts.apiKeyEnv = next();
     else if (a === "--tools") opts.tools = next().split(",");
     else if (a === "--model") opts.model = next();
     else if (a === "--save") opts.save = true;
@@ -197,7 +204,7 @@ const needsModel = (t) => t.id !== "claude" && t.needsModel !== false;
  * Best-effort: any failure returns {} and the built-in defaults apply.
  */
 async function fetchServerModels(server, cookie, tools) {
-  const out = { claude: {}, byTool: {}, shared: null };
+  const out = { claude: {}, byTool: {}, lists: {}, shared: null };
   if (!cookie) return out;
 
   const get = async (route) => {
@@ -229,6 +236,9 @@ async function fetchServerModels(server, cookie, tools) {
     try {
       const model = await t.serverModel(data);
       if (model) out.byTool[t.id] = model;
+      // Tools that keep a model list of their own (omp pins the server's
+      // selection in models.yml); only the ones declaring the hook are asked.
+      if (t.serverModels) out.lists[t.id] = (await t.serverModels(data)) || [];
     } catch { /* malformed config on the server — skip this tool */ }
   }));
   out.shared = out.byTool.opencode || null;
@@ -362,9 +372,13 @@ async function runConnect(argv) {
     toolModels[t.id] = opts.model || serverModels.byTool[t.id] || serverModels.shared || null;
     if (!opts.model && !serverModels.byTool[t.id] && serverModels.shared) fromOpencode.push(t.id);
   }
-  for (const m of new Set(Object.values(toolModels).filter(Boolean))) warnMissing("model", m, "--model");
-  if (fromOpencode.length) {
-    console.log(`• ${fromOpencode.join(", ")}: no own model on the server — using its OpenCode model`);
+  // Tools that hold a list (omp): the server's selection, plus an explicit
+  // --model, which is written alongside rather than replacing it.
+  const toolModelLists = {};
+  for (const t of tools) {
+    if (!t.serverModels) continue;
+    const list = serverModels.lists?.[t.id] || [];
+    toolModelLists[t.id] = opts.model && !list.includes(opts.model) ? [opts.model, ...list] : [...list];
   }
 
   let failed = 0;
@@ -375,7 +389,7 @@ async function runConnect(argv) {
       console.log(`⏭  ${t.name}: no model configured on the server — skipped (pass --model <model>)`);
       continue;
     }
-    const ctx = { baseUrl: server, apiKey, model: toolModels[t.id], claudeModels };
+    const ctx = { baseUrl: server, apiKey, apiKeyEnv: opts.apiKeyEnv, model: toolModels[t.id], claudeModels, models: toolModelLists[t.id] };
     try {
       const files = await t.apply(ctx);
       console.log(`✅ ${t.name} → ${files.join(", ")}`);
@@ -394,7 +408,16 @@ async function runConnect(argv) {
     }
   }
   for (const [id, m] of Object.entries(toolModels)) if (m) console.log(`   ${id} model: ${m}`);
-  if (tools.some((t) => t.id === "omp")) console.log("   omp models: every server model, listed under 9router in /model");
+  if (tools.some((t) => t.id === "omp")) {
+    const pinned = toolModelLists.omp || [];
+    console.log(pinned.length
+      ? `   omp models: ${pinned.join(", ")} pinned in models.yml, plus every other server model via discovery`
+      : "   omp models: every server model, listed under 9router in /model");
+    // The file holds the variable's name, so OMP only authenticates when the
+    // shell exports it; say so instead of letting the first request 401.
+    console.log(`   omp key: names ${opts.apiKeyEnv || "NINEROUTER_API_KEY"} — export it in your shell, e.g.`);
+    console.log(`            echo 'export ${opts.apiKeyEnv || "NINEROUTER_API_KEY"}=${apiKey}' >> ~/.bashrc`);
+  }
   console.log(`   Restart the tools to apply. Undo: npx 9router connect --reset --tools ${tools.map((t) => t.id).join(",")}`);
 
   if (opts.printEnv) {

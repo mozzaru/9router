@@ -62,6 +62,18 @@
 - Unit tests restored: `tests/unit/gemini-web-tools.test.js` (25/25 passing)
 - Direct executor test: all 4 models respond via the user's cookie (Flash-Lite 42s, Flash 27s, Pro 7s, Argon 36s)
 
+# Unreleased
+
+## Fixes
+- **CLI Tools (Oh My Pi)**: proxy discovery now works. `models.yml` gets `discovery.timeoutMs: 60000` because OMP's proxy probe defaults to 10 s while `/v1/models` answered in 11–15 s, so discovery returned no models at all and only hand-written entries were visible.
+- **CLI Tools (Oh My Pi)**: the selected models are pinned into `models.yml` (`providers.9router.models`), not just `config.yml`. A reset or removal that clears `config.yml` no longer loses the selection, and the pinned ids keep working while the server is unreachable.
+- **CLI Tools (Oh My Pi)**: the provider API key is written as an environment variable name (`NINEROUTER_API_KEY` by default) instead of the secret. OMP resolves `apiKey` as environment-variable-name-or-literal, so the key can live in `~/.bashrc`. The dashboard card has a "Key source" toggle, `9router connect --tools omp` writes the reference, and `--api-key-env <NAME>` overrides the name.
+- **CLI Tools (Oh My Pi)**: hand-written provider keys (`reasoning: true`, proxy overrides) survive an apply instead of being dropped by the rewrite.
+- **CLI Tools (Oh My Pi)**: the success message points at `omp models refresh`. OMP caches the provider roster in `models.db` for two hours, so a model added on the server does not appear in a running OMP until the cache expires or is refreshed.
+
+## Performance
+- **`/v1/models`**: compatible-provider catalogues are cached for 60 s with in-flight dedup, and the per-connection `GET {baseUrl}/models` probes run concurrently instead of one at a time. Measured on a 139-connection install: 19.2 s cold / 0.95 s warm, down from 11–15 s on every request. This is what made OMP discovery time out.
+
 ---
 
 # v0.5.321 (2026-10-27)

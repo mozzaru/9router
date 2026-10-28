@@ -4,9 +4,10 @@
  * tool configured here looks identical to one applied from the dashboard.
  *
  * Each tool: { id, name, paths(), apply(ctx) → string[] written, reset() → string[] touched }
- * Optional: route + serverModel(data) to inherit the server's model; needsModel: false
- * for tools that discover models themselves (omp).
- * ctx: { baseUrl (origin, no /v1), apiKey, model, claudeModels: { envKey: model } }
+ * Optional: route + serverModel(data) to inherit the server's model; serverModels(data)
+ * to inherit a list (omp); needsModel: false for tools that need no model of their
+ * own (omp discovers models itself).
+ * ctx: { baseUrl (origin, no /v1), apiKey, model, models, claudeModels: { envKey: model } }
  */
 
 const fs = require("fs");
@@ -479,9 +480,19 @@ const pi = {
 };
 
 // ── Oh My Pi ────────────────────────────────────────────────────────────────
-// Proxy discovery lists every server model under /model, so no model is written.
+// Proxy discovery lists every server model under /model, so a model is not
+// required. 9Router's /v1/models fans out to every active provider's live
+// catalogue and regularly answers in 10-15s — past OMP's 10s default probe
+// budget, which made discovery return nothing and left only hand-written
+// `models` entries visible. The budget is raised, and the server's selected
+// models are pinned so they survive an unreachable server.
 // The dashboard also mirrors the key into agent.db; models.yml is the primary
 // source, so that best-effort sqlite write is skipped here.
+// `apiKey` holds an environment variable name, not a secret: OMP resolves the
+// field as environment-variable-name-or-literal, so the real key stays in the
+// operator's shell (~/.bashrc) and never lands in a file this CLI writes.
+const OMP_DISCOVERY_TIMEOUT_MS = 60000;
+const OMP_API_KEY_ENV = "NINEROUTER_API_KEY";
 const ompPath = () => path.join(home(), ".omp", "agent", "models.yml");
 
 async function readYaml(file) {
@@ -495,33 +506,65 @@ async function readYaml(file) {
   }
 }
 
+const ompModelIds = (entry) =>
+  (Array.isArray(entry?.models) ? entry.models : [])
+    .map((m) => (typeof m === "string" ? m : m?.id))
+    .filter(isStr);
+
+const OMP_OWNED_KEYS = new Set(["baseUrl", "apiKey", "api", "authHeader", "disableStrictTools", "discovery", "models"]);
+
+// Keys the template owns; anything else hand-written on the entry (e.g.
+// `reasoning: true`) is carried across so an apply never silently drops it.
+const ompExtras = (entry) =>
+  Object.fromEntries(
+    Object.entries(entry && typeof entry === "object" ? entry : {})
+      .filter(([key, value]) => !OMP_OWNED_KEYS.has(key) && ["string", "number", "boolean"].includes(typeof value))
+  );
+
+
 const omp = {
   id: "omp",
   name: "Oh My Pi",
   paths: () => [ompPath()],
+  route: "omp-settings",
+  // The selection the operator already made on the server, mirrored into
+  // models.yml so the CLI and the dashboard produce the same file.
+  serverModels(data) {
+    const list = Array.isArray(data?.omp?.models) ? data.omp.models : [];
+    return list.filter(isStr);
+  },
   needsModel: false,
-  async apply({ baseUrl, apiKey }) {
+  async apply({ baseUrl, models, apiKeyEnv }) {
     const { stringifyYAML } = await toml();
     const file = ompPath();
     const cfg = (await readYaml(file)) || {};
+    const current = cfg.providers?.["9router"];
+    // No model passed (plain quick setup): keep whatever is already pinned.
+    const ids = [...new Set(Array.isArray(models) ? models.filter(isStr) : ompModelIds(current))];
     cfg.providers = cfg.providers || {};
     cfg.providers["9router"] = {
       baseUrl: v1(baseUrl),
-      apiKey,
+      apiKey: isStr(apiKeyEnv) ? apiKeyEnv : (isStr(current?.apiKey) ? current.apiKey : OMP_API_KEY_ENV),
       api: "openai-completions",
       authHeader: true,
       disableStrictTools: true,
-      discovery: { type: "proxy" },
+      discovery: { type: "proxy", timeoutMs: OMP_DISCOVERY_TIMEOUT_MS },
+      ...ompExtras(current),
+      ...(ids.length > 0 ? { models: ids.map((id) => ({ id })) } : {}),
     };
     writeFile(file, stringifyYAML(cfg));
     return [file];
   },
   async show() {
     const p = (await readYaml(ompPath()))?.providers?.["9router"];
+    const ids = ompModelIds(p);
     return {
       baseUrl: p?.baseUrl,
       apiKey: p?.apiKey,
-      models: p?.discovery?.type === "proxy" ? { main: "(all server models, via discovery)" } : {},
+      models: {
+        main: "(all server models, via discovery)",
+        ...(ids.length > 0 ? { pinned: ids.join(", ") } : {}),
+      },
     };
   },
   async reset() {

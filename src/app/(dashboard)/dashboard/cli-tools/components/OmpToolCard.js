@@ -9,6 +9,9 @@ import ApiKeySelect from "./ApiKeySelect";
 import { matchKnownEndpoint } from "./cliEndpointMatch";
 
 const ENDPOINT = "/api/cli-tools/omp-settings";
+// Must match API_KEY_ENV in @/lib/ompConfig — the route reports the live value
+// back, so this is only the initial/default name shown in the field.
+const DEFAULT_API_KEY_ENV = "NINEROUTER_API_KEY";
 
 export default function OmpToolCard({
   tool,
@@ -31,6 +34,10 @@ export default function OmpToolCard({
   const [message, setMessage] = useState(null);
   const [showInstallGuide, setShowInstallGuide] = useState(false);
   const [selectedApiKey, setSelectedApiKey] = useState("");
+  // OMP resolves `apiKey` as environment-variable-name-or-literal, so the key is
+  // written by name and its value stays in the operator's shell.
+  const [useEnvKey, setUseEnvKey] = useState(true);
+  const [apiKeyEnvName, setApiKeyEnvName] = useState(DEFAULT_API_KEY_ENV);
   const [customBaseUrl, setCustomBaseUrl] = useState("");
   const [modelAliases, setModelAliases] = useState({});
   const [selectedModels, setSelectedModels] = useState([]);
@@ -64,6 +71,12 @@ export default function OmpToolCard({
   // the OMP config the route reports.
   useEffect(() => {
     if (status?.omp?.models) setSelectedModels(status.omp.models);
+    // A stored env name means the provider block references the shell; absent
+    // means a literal key is on disk, so the toggle reflects what is really there.
+    if (status?.omp) {
+      setUseEnvKey(Boolean(status.omp.apiKeyEnv));
+      setApiKeyEnvName(status.omp.apiKeyEnv || status.omp.defaultApiKeyEnv || DEFAULT_API_KEY_ENV);
+    }
     if (typeof status?.omp?.activeModel === "string") setActiveModel(status.omp.activeModel);
     // GET only reports 9Router-scoped roles, so an absent `task` means cleared.
     setSubagentModel(status?.modelRoles?.task || "");
@@ -109,22 +122,25 @@ export default function OmpToolCard({
     }
   };
 
+  // The route writes `apiKey` as given. In env mode that value is a variable
+  // name, so the secret never reaches disk; literal mode is opt-in per apply.
+  const getRequestKeyFields = () => {
+    if (useEnvKey) {
+      return { baseUrl: getEffectiveBaseUrl(), apiKeyEnv: apiKeyEnvName.trim() || DEFAULT_API_KEY_ENV };
+    }
+    const keyToUse = (selectedApiKey && selectedApiKey.trim())
+      ? selectedApiKey
+      : (!cloudEnabled ? "sk_9router" : selectedApiKey);
+    return { baseUrl: getEffectiveBaseUrl(), apiKey: keyToUse, apiKeyLiteral: true };
+  };
+
   const saveModels = async (models) => {
     try {
-      const keyToUse = (selectedApiKey && selectedApiKey.trim())
-        ? selectedApiKey
-        : (!cloudEnabled ? "sk_9router" : selectedApiKey);
       const validActive = models.includes(activeModel) ? activeModel : (models[0] || "");
       await fetch(ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          baseUrl: getEffectiveBaseUrl(),
-          apiKey: keyToUse,
-          models,
-          activeModel: validActive,
-          subagentModel,
-        }),
+        body: JSON.stringify({ ...getRequestKeyFields(), models, activeModel: validActive, subagentModel }),
       });
     } catch (error) {
       console.log("Error saving models:", error);
@@ -135,15 +151,11 @@ export default function OmpToolCard({
     setApplying(true);
     setMessage(null);
     try {
-      const keyToUse = (selectedApiKey && selectedApiKey.trim())
-        ? selectedApiKey
-        : (!cloudEnabled ? "sk_9router" : selectedApiKey);
       const res = await fetch(ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          baseUrl: getEffectiveBaseUrl(),
-          apiKey: keyToUse,
+          ...getRequestKeyFields(),
           models: selectedModels,
           activeModel,
           subagentModel,
@@ -187,12 +199,20 @@ export default function OmpToolCard({
   };
 
   const getManualConfigs = () => {
-    const keyToUse = (selectedApiKey && selectedApiKey.trim())
-      ? selectedApiKey
-      : (!cloudEnabled ? "sk_9router" : "<API_KEY_FROM_DASHBOARD>");
+    const keyToUse = useEnvKey
+      ? (apiKeyEnvName.trim() || DEFAULT_API_KEY_ENV)
+      : (selectedApiKey && selectedApiKey.trim())
+        ? selectedApiKey
+        : (!cloudEnabled ? "sk_9router" : "<API_KEY_FROM_DASHBOARD>");
     const url = getEffectiveBaseUrl();
 
-    const modelsYml = `providers:\n  9router:\n    baseUrl: ${url}\n    apiKey: ${keyToUse}\n    api: openai-completions\n    authHeader: true\n    disableStrictTools: true\n    discovery:\n      type: proxy`;
+    // Mirrors buildProviderBlock in @/lib/ompConfig: the raised discovery probe
+    // budget is what lets OMP see models the server adds later, and the pinned
+    // list keeps the current selection working when the server is unreachable.
+    const pinned = selectedModels.length > 0
+      ? `\n    models:\n${selectedModels.map((m) => `      - id: ${m}`).join("\n")}`
+      : "";
+    const modelsYml = `providers:\n  9router:\n    baseUrl: ${url}\n    apiKey: ${keyToUse}\n    api: openai-completions\n    authHeader: true\n    disableStrictTools: true\n    discovery:\n      type: proxy\n      timeoutMs: 60000${pinned}`;
 
     const modelsList = selectedModels.length > 0 ? selectedModels : ["provider/model-id"];
     let configYml = "enabledModels:\n" + modelsList.map((m) => `  - 9router/${m}`).join("\n") + "\n";
@@ -303,6 +323,35 @@ export default function OmpToolCard({
                   <span className="text-xs font-semibold text-text-main sm:text-right sm:text-sm">API Key</span>
                   <span className="material-symbols-outlined hidden text-text-muted text-[14px] sm:inline">arrow_forward</span>
                   <ApiKeySelect value={selectedApiKey} onChange={setSelectedApiKey} apiKeys={apiKeys} cloudEnabled={cloudEnabled} />
+                </div>
+
+                {/* Key storage. OMP resolves `apiKey` as an environment variable
+                    name, so the value can stay in the shell instead of this file. */}
+                <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr_auto] sm:items-center sm:gap-2">
+                  <span className="text-xs font-semibold text-text-main sm:text-right sm:text-sm">Key source</span>
+                  <span className="material-symbols-outlined hidden text-text-muted text-[14px] sm:inline">arrow_forward</span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="inline-flex items-center gap-1.5 text-xs text-text-main cursor-pointer">
+                      <input type="checkbox" checked={useEnvKey} onChange={(e) => setUseEnvKey(e.target.checked)} />
+                      Read from env var
+                    </label>
+                    {useEnvKey ? (
+                      <input
+                        value={apiKeyEnvName}
+                        onChange={(e) => setApiKeyEnvName(e.target.value)}
+                        placeholder={DEFAULT_API_KEY_ENV}
+                        spellCheck={false}
+                        className="px-2 py-1 w-48 bg-surface border border-border rounded text-xs font-mono text-text-main"
+                      />
+                    ) : (
+                      <span className="text-xs text-yellow-500">The key is written into models.yml in plain text</span>
+                    )}
+                  </div>
+                  {useEnvKey && (
+                    <span className="text-[11px] text-text-muted sm:col-start-3">
+                      export {apiKeyEnvName.trim() || DEFAULT_API_KEY_ENV}=&lt;key&gt; in ~/.bashrc
+                    </span>
+                  )}
                 </div>
 
                 {/* Models — multi-select */}

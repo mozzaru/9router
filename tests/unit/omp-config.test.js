@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { load as loadYaml } from "js-yaml";
 import {
   parseConfigYaml,
   buildConfigYaml,
@@ -6,6 +7,12 @@ import {
   applyModelSettings,
   remove9RouterSettings,
   toSelector,
+  buildProviderBlock,
+  providerExtras,
+  readProviderModelIds,
+  DISCOVERY_TIMEOUT_MS,
+  API_KEY_ENV,
+  apiKeyRef,
 } from "@/lib/ompConfig.js";
 
 const OTHER_CONFIG = `setupVersion: 2
@@ -17,6 +24,10 @@ modelRoles:
   default: 9router/old-model
   smol: 9router/old-smol
 `;
+
+// The block is emitted pre-indented for insertion under `providers:`; wrap it
+// the way the route does so the assertions read the parsed document.
+const providerEntry = (block) => loadYaml(`providers:\n${block}\n`).providers["9router"];
 
 describe("omp config.yml merge semantics", () => {
   it("normalizes bare ids to 9router selectors", () => {
@@ -93,5 +104,69 @@ describe("omp config.yml merge semantics", () => {
     expect(next.enabledModels).toEqual(["sky/some-other-model"]);
     expect(next.modelRoles).toEqual({ flat: "sky/other" });
     expect(parseConfigYaml(buildConfigYaml(next))).toEqual(next);
+  });
+});
+
+describe("omp models.yml provider block", () => {
+  it("raises the discovery probe budget past 9Router's model-list latency", () => {
+    const block = buildProviderBlock("http://127.0.0.1:20128", "sk_9router");
+    const provider = providerEntry(block);
+    // The observed /v1/models latency is 10-15s; OMP's 10s default timed out and
+    // discovery published no models at all.
+    expect(provider.discovery).toEqual({ type: "proxy", timeoutMs: DISCOVERY_TIMEOUT_MS });
+    expect(DISCOVERY_TIMEOUT_MS).toBeGreaterThan(15000);
+    expect(provider.models).toBeUndefined();
+  });
+
+  it("pins the selection without duplicating ids", () => {
+    const block = buildProviderBlock("http://127.0.0.1:20128/v1", "sk_9router", ["m1", "m2", "m1", "  ", null]);
+    const provider = providerEntry(block);
+    expect(provider.models).toEqual([{ id: "m1" }, { id: "m2" }]);
+    expect(provider.baseUrl).toBe("http://127.0.0.1:20128/v1");
+    expect(readProviderModelIds(`providers:\n${block}\n`)).toEqual(["m1", "m2"]);
+  });
+
+  it("quotes ids that a plain scalar would truncate", () => {
+    const block = buildProviderBlock("http://host", "sk-9router", ["weird: id", "has #hash"]);
+    expect(providerEntry(block).models).toEqual([{ id: "weird: id" }, { id: "has #hash" }]);
+  });
+
+  it("reads ids back from either a block or a hand-written list", () => {
+    expect(readProviderModelIds(`providers:\n  9router:\n    models:\n      - plain-id\n`)).toEqual(["plain-id"]);
+    expect(readProviderModelIds("providers:\n  other:\n    x: 1\n")).toEqual([]);
+    expect(readProviderModelIds("{{{ nope")).toEqual([]);
+  });
+
+  it("carries hand-written provider keys across a rewrite", () => {
+    const existing = {
+      baseUrl: "http://old/v1",
+      apiKey: "old",
+      reasoning: true,
+      discovery: { type: "proxy" },
+      models: [{ id: "old" }],
+    };
+    const provider = providerEntry(buildProviderBlock("http://new", "k", ["fresh"], providerExtras(existing)));
+    // Template-owned keys are rewritten; anything hand-written survives.
+    expect(provider.baseUrl).toBe("http://new/v1");
+    expect(provider.apiKey).toBe("k");
+    expect(provider.reasoning).toBe(true);
+    expect(provider.models).toEqual([{ id: "fresh" }]);
+  });
+});
+
+describe("omp apiKey as an environment reference", () => {
+  it("writes the variable name, never a literal secret", () => {
+    expect(apiKeyRef()).toBe(API_KEY_ENV);
+    const block = buildProviderBlock("http://127.0.0.1:20128", apiKeyRef(), ["m1"]);
+    expect(block).toContain(`apiKey: ${API_KEY_ENV}`);
+    expect(providerEntry(block).apiKey).toBe(API_KEY_ENV);
+    // OMP resolves this field as env-name-or-literal, so the bare name is the
+    // reference; a `$` prefix would be sent to the server as the key itself.
+    expect(block).not.toContain("apiKey: $");
+  });
+
+  it("still writes an explicit key when the caller insists", () => {
+    const block = buildProviderBlock("http://127.0.0.1:20128", "sk-literal-1", []);
+    expect(providerEntry(block).apiKey).toBe("sk-literal-1");
   });
 });
