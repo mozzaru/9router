@@ -61,11 +61,28 @@ const useThemeStore = create((set, get) => ({
 
 // Apply theme to document. "dark" always stays on (both modes are dark);
 // "glass" adds the frosted-token overrides in globals.css.
+//
+// The resolved mode is mirrored into localStorage under the key the root
+// layout's pre-paint bootstrap reads. Without that write the bootstrap always
+// saw `null`, always took its `!== "dark"` branch, and painted `dark glass` on
+// every load of a `dark` install until this module fetched /api/theme and
+// removed the class - measured in Chromium as first paint `dark glass` on a
+// `dark` install. The value is only a paint hint: the server setting still wins
+// on every load, and it is written here on each apply so a mode chosen by the
+// administrator reaches every browser that has ever loaded the dashboard.
 export function applyTheme(theme) {
   if (typeof window === "undefined") return;
+  const id = normalize(theme);
   const root = document.documentElement;
   root.classList.add("dark");
-  root.classList.toggle("glass", normalize(theme) === "glass");
+  root.classList.toggle("glass", id === "glass");
+  try {
+    // Shape matches what the bootstrap parses: { state: { theme } }.
+    window.localStorage.setItem("theme", JSON.stringify({ state: { theme: id } }));
+  } catch {
+    // Private mode or a blocked storage partition: the class above is already
+    // applied, only the next load's first paint loses the hint.
+  }
 }
 
 export default useThemeStore;

@@ -6,6 +6,7 @@ import m002 from "./002-drop-budget-groups.js";
 import m003 from "./003-drop-prd-docs.js";
 import m004 from "./004-drop-prd-builder.js";
 import m005 from "./005-rename-oc1-alias.js";
+import m006 from "./005-drop-removed-provider-connections.js";
 
 export const MIGRATIONS = [m001, m002, m003, m004, m005].sort((a, b) => a.version - b.version);
 
