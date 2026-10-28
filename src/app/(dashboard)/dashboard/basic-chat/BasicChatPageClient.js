@@ -264,8 +264,20 @@ export default function BasicChatPageClient() {
           group.models.push(...staticModels);
         }
 
+        // Only connections whose health is not already known-bad get a live
+        // catalog probe. On this install's 191 active connections, 146 were
+        // recorded unavailable by the router's own tests (113 rate-limited, 16
+        // blocked, ...), so probing all of them meant 146 doomed upstream round
+        // trips on every page load - each a 20 s-timeout candidate, and a
+        // console error per rejection. The static catalog above already
+        // contributed their models, so the picker loses nothing; a connection
+        // is re-probed from the provider page, which is where an operator asks
+        // for a fresh status.
+        const liveProbeTargets = connections.filter(
+          (connection) => connection.testStatus !== "unavailable"
+        );
         const liveResults = await Promise.all(
-          connections.map(async (connection) => {
+          liveProbeTargets.map(async (connection) => {
             try {
               const response = await fetch(`/api/providers/${connection.id}/models`, { cache: "no-store" });
               const data = await response.json().catch(() => ({}));
