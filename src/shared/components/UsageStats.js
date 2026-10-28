@@ -32,15 +32,43 @@ function timeAgo(timestamp) {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
-// Auto-update time display every second without re-rendering parent
+// Auto-update time display every second without re-rendering the parent.
+// Twenty rows meant twenty live intervals that never stopped - each one forced
+// a React render every second for as long as the page was open, which is what
+// made scrolling fight the main thread. One shared interval drives every row,
+// and it only runs while a row can still change label (under a minute);
+// anything older renders once and parks.
+const secondsTickListeners = new Set();
+let secondsTickTimer = null;
+
+function subscribeSeconds(cb) {
+  secondsTickListeners.add(cb);
+  if (!secondsTickTimer) {
+    secondsTickTimer = setInterval(() => {
+      for (const listener of secondsTickListeners) listener();
+    }, 1000);
+    secondsTickTimer.unref?.();
+  }
+  return () => {
+    secondsTickListeners.delete(cb);
+    if (secondsTickListeners.size === 0 && secondsTickTimer) {
+      clearInterval(secondsTickTimer);
+      secondsTickTimer = null;
+    }
+  };
+}
+
 function TimeAgo({ timestamp }) {
   const [, setTick] = useState(0);
-  
+  const ageSec = (Date.now() - new Date(timestamp)) / 1000;
+  // Only rows still counting "Ns ago" need a timer at all.
+  const live = ageSec < 60;
+
   useEffect(() => {
-    const timer = setInterval(() => setTick(t => t + 1), 1000);
-    return () => clearInterval(timer);
-  }, []);
-  
+    if (!live) return undefined;
+    return subscribeSeconds(() => setTick((t) => t + 1));
+  }, [live]);
+
   return <>{timeAgo(timestamp)}</>;
 }
 

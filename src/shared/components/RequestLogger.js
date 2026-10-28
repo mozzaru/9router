@@ -83,12 +83,19 @@ export default function RequestLogger() {
                   if (parts.length < 7) return null;
 
                   const status = parts[6];
-                  const isPending = status.includes("PENDING");
-                  const isFailed = status.includes("FAILED");
-                  const isSuccess = status.includes("OK");
+                  // usageHistory writes bare lowercase "ok" for a finished call,
+                  // a code ("429") for a rejection and "FAILED <code>" when the
+                  // executor gave up. The old checks tested uppercase and so
+                  // matched nothing: every successful row fell through to
+                  // `animate-pulse`, putting 200 elements in a permanent
+                  // animation and repainting the whole table on every scroll.
+                  const lower = status.trim().toLowerCase();
+                  const isPending = lower.includes("pending");
+                  const isFailed = lower.includes("failed") || /^[45]\d\d$/.test(lower);
+                  const isSuccess = !isPending && !isFailed && (lower === "ok" || lower === "success" || lower === "completed" || lower === "");
 
                   return (
-                    <tr key={i} className={`hover:bg-primary/5 transition-colors ${isPending ? 'bg-primary/5' : ''}`}>
+                    <tr key={`${parts[0]}|${parts[1]}|${parts[2]}|${i}`} className="hover:bg-primary/5 transition-colors">
                       <td className="px-3 py-1.5 border-r border-border text-text-muted">{parts[0]}</td>
                       <td className="px-3 py-1.5 border-r border-border font-medium">{parts[1]}</td>
                       <td className="px-3 py-1.5 border-r border-border">
@@ -101,7 +108,7 @@ export default function RequestLogger() {
                       <td className="px-3 py-1.5 border-r border-border text-right text-success">{parts[5]}</td>
                       <td className={`px-3 py-1.5 font-bold ${isSuccess ? 'text-success' :
                           isFailed ? 'text-error' :
-                            'text-primary animate-pulse'
+                            isPending ? 'text-primary' : 'text-text-muted'
                         }`}>
                         {status}
                       </td>

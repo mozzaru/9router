@@ -399,15 +399,30 @@ export default function ProviderTopology({ providers = [], activeRequests = [], 
     return filtered;
   }, [rawActiveSet, tick]);
 
-  const { nodes, edges } = useMemo(
-    () => buildLayout(providers, activeSet, lastSet, errorSet),
-    [providers, activeSet, lastSet, errorSet]
+  // `activeSet` is a fresh Set on every 1s tick, so a memo keyed on the Set
+  // itself rebuilt the whole graph (new node/edge objects) once a second for as
+  // long as any provider was active - work that ran on the main thread beside
+  // every scroll. Keying on the sorted contents makes the rebuild happen only
+  // when the active providers actually change.
+  const activeContentKey = useMemo(() => [...activeSet].sort().join(","), [activeSet]);
+  const stableActiveSet = useMemo(
+    () => new Set(activeContentKey ? activeContentKey.split(",") : []),
+    [activeContentKey]
   );
 
-  // Stable key - only remount when provider list changes
+  const { nodes, edges } = useMemo(
+    () => buildLayout(providers, stableActiveSet, lastSet, errorSet),
+    [providers, stableActiveSet, lastSet, errorSet]
+  );
+
+  // Same reason, for the remount key: ReactFlow holds the previous node/edge
+  // objects internally, so a layout that changed without a remount left stale
+  // edge data animating. Contents in the key means one remount per real change.
   const providersKey = useMemo(
-    () => providers.map((p) => p.provider).sort().join(","),
-    [providers]
+    () =>
+      `${providers.map((p) => p.provider).sort().join(",")}|` +
+      `${activeContentKey}|${lastKey}|${errorKey}`,
+    [providers, activeContentKey, lastKey, errorKey]
   );
 
   const rfInstance = useRef(null);
