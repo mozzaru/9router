@@ -142,6 +142,10 @@ import { fetch as undiciFetch } from "undici";
 const LIVE_CACHE_TTL_MS = 10 * 60 * 1000;
 const LIVE_TIMEOUT_MS = 15000;
 const liveCache = new Map(); // `${url}\0${type}` -> { data, expiresAt }
+// One lookup per key at a time. Without this, concurrent listing requests (the
+// dashboard and a CLI both probing /models) each opened their own 15s upstream
+// fetch on a cold cache and serialized behind each other.
+const liveInFlight = new Map(); // `${url}\0${type}` -> Promise<data>
 
 /**
  * Fetch and filter a provider's live model list.
@@ -164,6 +168,9 @@ export async function fetchSuggestedModelsServer(fetcher) {
   const key = `${fetcher.url}\0${fetcher.type}`;
   const hit = liveCache.get(key);
   if (hit && Date.now() < hit.expiresAt) return hit.data;
+
+  const pending = liveInFlight.get(key);
+  if (pending) return pending;
 
   const fallback = FALLBACK_SUGGESTIONS[fetcher.type] ?? [];
   const lookup = (async () => {
@@ -188,9 +195,14 @@ export async function fetchSuggestedModelsServer(fetcher) {
     timer = setTimeout(() => resolve(fallback), SERVER_CEILING_MS);
     if (typeof timer.unref === "function") timer.unref();
   });
+  const shared = Promise.race([lookup, ceiling]);
+  // Registered before the await so a caller that gives up on the ceiling does
+  // not let the next request start a second upstream fetch for the same key.
+  liveInFlight.set(key, shared);
   try {
-    return await Promise.race([lookup, ceiling]);
+    return await shared;
   } finally {
     clearTimeout(timer);
+    liveInFlight.delete(key);
   }
 }
