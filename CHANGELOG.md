@@ -63,8 +63,10 @@
 - Direct executor test: all 4 models respond via the user's cookie (Flash-Lite 42s, Flash 27s, Pro 7s, Argon 36s)
 
 # Unreleased
-
 ## Fixes
+- **CLI (`connect`)**: an apply no longer mints a new API key on every run. It reuses `--key-name` when that key exists, otherwise the newest active key, and only creates one when the server holds none.
+- **CLI (`connect --reset`)**: removing the Oh My Pi settings now also clears `9router/*` entries from `~/.omp/agent/config.yml`, so no role is left pointing at a provider that no longer exists. Other providers' entries survive.
+- **CLI Tools (Oh My Pi)**: applying with an environment-backed key reports when the variable is not exported in the server process, instead of handing over a config whose first request answers 401.
 - **CLI Tools (Oh My Pi)**: proxy discovery now works. `models.yml` gets `discovery.timeoutMs: 60000` because OMP's proxy probe defaults to 10 s while `/v1/models` answered in 11–15 s, so discovery returned no models at all and only hand-written entries were visible.
 - **CLI Tools (Oh My Pi)**: the selected models are pinned into `models.yml` (`providers.9router.models`), not just `config.yml`. A reset or removal that clears `config.yml` no longer loses the selection, and the pinned ids keep working while the server is unreachable.
 - **CLI Tools (Oh My Pi)**: the provider API key is written as an environment variable name (`NINEROUTER_API_KEY` by default) instead of the secret. OMP resolves `apiKey` as environment-variable-name-or-literal, so the key can live in `~/.bashrc`. The dashboard card has a "Key source" toggle, `9router connect --tools omp` writes the reference, and `--api-key-env <NAME>` overrides the name.

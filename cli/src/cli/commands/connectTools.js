@@ -522,6 +522,37 @@ const ompExtras = (entry) =>
   );
 
 
+// Mirror of remove9RouterSettings in @/lib/ompConfig: drop `9router/*` role
+// assignments and enabledModels entries, leave every other provider alone.
+function stripOmpSelectors(config) {
+  const prefix = "9router/";
+  const next = { ...config };
+  let changed = false;
+
+  const roles = next.modelRoles;
+  if (roles && typeof roles === "object") {
+    const kept = Object.fromEntries(
+      Object.entries(roles).filter(([, value]) => !(typeof value === "string" && value.startsWith(prefix)))
+    );
+    if (Object.keys(kept).length !== Object.keys(roles).length) {
+      changed = true;
+      if (Object.keys(kept).length > 0) next.modelRoles = kept;
+      else delete next.modelRoles;
+    }
+  }
+
+  if (Array.isArray(next.enabledModels)) {
+    const kept = next.enabledModels.filter((entry) => !(typeof entry === "string" && entry.startsWith(prefix)));
+    if (kept.length !== next.enabledModels.length) {
+      changed = true;
+      if (kept.length > 0) next.enabledModels = kept;
+      else delete next.enabledModels;
+    }
+  }
+
+  return { config: next, changed };
+}
+
 const omp = {
   id: "omp",
   name: "Oh My Pi",
@@ -571,11 +602,26 @@ const omp = {
     const { stringifyYAML } = await toml();
     const file = ompPath();
     const cfg = await readYaml(file);
-    if (!cfg?.providers?.["9router"]) return [];
-    delete cfg.providers["9router"];
-    if (Object.keys(cfg.providers).length === 0) delete cfg.providers;
-    rewriteFile(file, Object.keys(cfg).length ? stringifyYAML(cfg) : "");
-    return [file];
+    const touched = [];
+    if (cfg?.providers?.["9router"]) {
+      delete cfg.providers["9router"];
+      if (Object.keys(cfg.providers).length === 0) delete cfg.providers;
+      rewriteFile(file, Object.keys(cfg).length ? stringifyYAML(cfg) : "");
+      touched.push(file);
+    }
+    // Leaving `<provider>/model` selectors in config.yml points roles at a
+    // provider that no longer exists, so the CLI reset clears them like the
+    // dashboard reset does. Other providers' entries are preserved.
+    const cfgFile = path.join(home(), ".omp", "agent", "config.yml");
+    const settings = await readYaml(cfgFile);
+    if (settings) {
+      const next = stripOmpSelectors(settings);
+      if (next.changed) {
+        rewriteFile(cfgFile, stringifyYAML(next.config));
+        touched.push(cfgFile);
+      }
+    }
+    return touched;
   },
 };
 

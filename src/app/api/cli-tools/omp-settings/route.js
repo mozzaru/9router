@@ -168,16 +168,21 @@ export async function POST(request) {
       return NextResponse.json({ error: { message: "baseUrl is required" } }, { status: 400 });
     }
 
-    // The key is written by name, not by value: OMP resolves `apiKey` as
-    // environment-variable-name-or-literal, so the secret lives in the shell
-    // (~/.bashrc) and never in a file we write. `apiKeyLiteral: true` keeps the
-    // old behaviour for callers that cannot export one.
+    // `apiKey` is written as an environment variable NAME: OMP resolves the
+    // field as env-name-or-literal, so the secret stays in the shell. The
+    // catch, documented by OMP, is that an unset variable is sent verbatim and
+    // the server answers 401 — so the variable must exist wherever OMP runs.
     const envName = typeof apiKeyEnv === "string" ? apiKeyEnv.trim() : "";
     if (envName && !ENV_NAME_RE.test(envName)) {
       return NextResponse.json({ error: { message: "apiKeyEnv must be a valid environment variable name" } }, { status: 400 });
     }
     const useEnvKey = !apiKeyLiteral;
     const keyValue = useEnvKey ? (envName || apiKeyRef()) : apiKey;
+    // The dashboard process usually shares the operator's shell; when it does
+    // not, report it instead of handing over a config that 401s on first use.
+    const envWarning = useEnvKey && !process.env[keyValue]
+      ? `${keyValue} is not set in this process — export it in the shell that launches OMP, or the first request will 401`
+      : null;
 
     await fs.mkdir(getOmpDir(), { recursive: true });
 
@@ -266,6 +271,8 @@ export async function POST(request) {
       // added here does not appear in a running omp until its cache expires or
       // the operator forces a re-probe. Say so instead of promising otherwise.
       message: "Oh My Pi settings applied! Run 'omp models refresh' so the selected models appear under /model.",
+      apiKeyEnv: useEnvKey ? keyValue : null,
+      warning: envWarning,
       configPath: getOmpModelsYmlPath(),
       configYmlPath: getOmpConfigYmlPath(),
     });

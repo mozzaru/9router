@@ -179,19 +179,26 @@ async function login(server, password) {
   throw new Error(`Login failed (${res.status}): ${res.data?.error || "unknown error"}`);
 }
 
+// An apply must not mint a credential every time: the server already holds the
+// keys the operator made. Reuse `--key-name` when it exists, else the newest
+// active key, and only create one when the server has none.
 async function getOrCreateApiKey(server, cookie, keyName) {
   const list = await request(`${server}/api/keys`, { cookie });
   if (list.status === 401) throw new Error("Unauthorized listing API keys — wrong password or session rejected");
   if (list.status !== 200) throw new Error(`Failed to list API keys (${list.status}): ${list.data?.error || ""}`);
-  const keys = (list.data?.keys || []).filter((k) => k.isActive !== false);
-  const existing = keys.find((k) => k.name === keyName);
-  if (existing) return { key: existing.key, created: false };
+  const keys = (list.data?.keys || []).filter((k) => k.isActive !== false && k.key);
+  const named = keys.find((k) => k.name === keyName);
+  if (named) return { key: named.key, created: false, name: named.name };
+  if (keys.length > 0) {
+    const newest = keys.reduce((a, b) => ((b.createdAt || 0) > (a.createdAt || 0) ? b : a));
+    return { key: newest.key, created: false, name: newest.name };
+  }
 
   const created = await request(`${server}/api/keys`, { method: "POST", cookie, body: { name: keyName } });
   if (created.status !== 201 || !created.data?.key) {
     throw new Error(`Failed to create API key (${created.status}): ${created.data?.error || ""}`);
   }
-  return { key: created.data.key, created: true };
+  return { key: created.data.key, created: true, name: keyName };
 }
 
 // Non-Claude tools that take a single model id (omp discovers all models itself).
@@ -335,7 +342,7 @@ async function runConnect(argv) {
     }
     const result = await getOrCreateApiKey(server, cookie, opts.keyName);
     apiKey = result.key;
-    console.log(`• ${result.created ? "Created" : "Reusing"} API key "${opts.keyName}" (${maskKey(apiKey)})`);
+    console.log(`• ${result.created ? "Created" : "Reusing"} API key "${result.name}" (${maskKey(apiKey)})`);
   }
 
   // Models always come from the server's own cli-tools config; flags override.

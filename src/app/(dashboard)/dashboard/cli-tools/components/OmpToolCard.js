@@ -164,7 +164,11 @@ export default function OmpToolCard({
       const data = await res.json();
       if (res.ok) {
         rememberEndpoint(getEffectiveBaseUrl(), { tunnelPublicUrl, tailscaleUrl });
-        setMessage({ type: "success", text: data.message || "Settings applied successfully!" });
+        // The route reports when the referenced variable is not exported here:
+        // OMP then sends the name itself and the server answers 401.
+        setMessage(data.warning
+          ? { type: "error", text: `${data.message} ⚠ ${data.warning}` }
+          : { type: "success", text: data.message || "Settings applied successfully!" });
         checkStatus();
       } else {
         setMessage({ type: "error", text: data.error?.message || "Failed to apply settings" });
