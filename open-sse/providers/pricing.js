@@ -400,13 +400,31 @@ export const PATTERN_PRICING = [
   { pattern: "grok-*",          pricing: { input: 0.50,  output: 2.00,  cached: 0.25,  reasoning: 3.00,   cache_creation: 0.50  } },
 ];
 
+// Compiled-glob cache. `matchPattern` runs once per pattern per model, and the
+// pattern tables are walked with ~110 entries for every model in a listing:
+// compiling the RegExp each call cost ~20us, so a 2.5k-model `/api/models`
+// response spent ~8s of pure regex construction and blocked the event loop for
+// every other request. The pattern set is a module constant, so the compiled
+// form is stable for the process lifetime.
+const patternRegexCache = new Map();
+
+function patternToRegex(pattern) {
+  const cached = patternRegexCache.get(pattern);
+  if (cached) return cached;
+  const regex = new RegExp(
+    "^" + pattern.split("*").map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$",
+    "i"
+  );
+  patternRegexCache.set(pattern, regex);
+  return regex;
+}
+
 /**
  * Match a model ID against a glob pattern (* = wildcard). Case-insensitive:
  * registry ids mix casing (e.g. "MiniMax-M2.5" vs "minimax-m2.5").
  */
 export function matchPattern(pattern, model) {
-  const regex = new RegExp("^" + pattern.split("*").map(s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$", "i");
-  return regex.test(model);
+  return patternToRegex(pattern).test(model);
 }
 
 /**

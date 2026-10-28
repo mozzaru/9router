@@ -683,6 +683,12 @@ const MODALITY_KEYS = ["vision", "pdf", "audioInput", "videoInput"];
 // lives on globalThis instead, and every read goes through it: caching it locally
 // would keep a reader alive in other copies after setCatalogSource(null).
 let catalogSource = null;
+// Memo for resolved caps. A listing route resolves every model in the registry
+// (2.5k+), and the UI refetches that listing on each edit/save, so the same
+// (provider, model) pair is resolved thousands of times per page interaction.
+// Values are plain frozen-by-convention objects; consumers copy, never mutate.
+const capsMemo = new Map();
+const CAPS_MEMO_MAX = 20000;
 
 /**
  * Install the synced catalog reader (server only).
@@ -692,6 +698,8 @@ let catalogSource = null;
 export function setCatalogSource(source) {
   catalogSource = source;
   if (typeof globalThis !== "undefined") globalThis.__9rCatalogSource = source;
+  // A new reader can only change resolved caps, so every memoized result is stale.
+  capsMemo.clear();
 }
 
 function getCatalogSource() {
@@ -763,7 +771,25 @@ function isCommandCodeTextOnly(model) {
   }
   return false;
 }
+/**
+ * Memoized entry point. Listing routes resolve every registry model (2.5k+)
+ * and the UI refetches that listing on each edit/save, so the same
+ * (provider, model) pair is resolved thousands of times per page interaction.
+ * Results are handed out as shallow copies: callers attach the object to a
+ * response entry, and the memo must not be mutable through it.
+ */
 export function getCapabilitiesForModel(provider, model) {
+  if (!model) return { ...DEFAULT_CAPABILITIES };
+  const key = `${provider || ""}\u0000${model}`;
+  const hit = capsMemo.get(key);
+  if (hit) return { ...hit };
+  const resolved = resolveModelCapabilities(provider, model);
+  if (capsMemo.size >= CAPS_MEMO_MAX) capsMemo.clear();
+  capsMemo.set(key, resolved);
+  return { ...resolved };
+}
+
+export function resolveModelCapabilities(provider, model) {
   if (!model) return { ...DEFAULT_CAPABILITIES };
 
   // Canonical exact lookup strips vendor prefix: "anthropic/claude-opus-4.7" -> "claude-opus-4.7".
